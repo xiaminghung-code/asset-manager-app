@@ -22,9 +22,27 @@ module.exports = async function handler(req, res) {
       return { price: rate };
     }
 
-    // 台股在Yahoo Finance用「代號.TW」查詢，美股直接用代號
-    const yahooSymbol = market === 'US' ? symbol : `${symbol}.TW`;
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}`;
+    // 台股在Yahoo Finance查詢：上市用「代號.TW」，上櫃用「代號.TWO」，兩種都自動試
+    if (market !== 'US') {
+      const suffixes = ['.TW', '.TWO'];
+      let lastYahooErr;
+      for (const suffix of suffixes) {
+        try {
+          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suffix)}`;
+          const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; asset-manager/1.0)' } });
+          if (!r.ok) throw new Error('yahoo status ' + r.status);
+          const json = await r.json();
+          const result = json && json.chart && json.chart.result && json.chart.result[0];
+          const price = result && result.meta && (result.meta.regularMarketPrice || result.meta.previousClose);
+          if (!price) throw new Error('no price in yahoo response');
+          return { price };
+        } catch (e) { lastYahooErr = e; }
+      }
+      throw lastYahooErr;
+    }
+
+    // 美股直接用代號查詢
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
     const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; asset-manager/1.0)' } });
     if (!r.ok) throw new Error('yahoo status ' + r.status);
     const json = await r.json();
