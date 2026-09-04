@@ -1,5 +1,6 @@
 // Vercel Serverless Function
-// 伺服器對伺服器呼叫，沒有瀏覽器的CORS限制，比前端繞代理穩定很多
+// 伺服器對伺服器呼叫，沒有瀏覽器的CORS限制
+// 改用 Yahoo Finance 公開報價介面：台股美股統一邏輯，比證交所官方API更少限流問題
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
@@ -15,30 +16,30 @@ module.exports = async function handler(req, res) {
     if (market === 'FX') {
       const r = await fetch('https://open.er-api.com/v6/latest/USD');
       if (!r.ok) throw new Error('fx status ' + r.status);
-      return { type: 'json', body: await r.json() };
-    } else if (market === 'US') {
-      const url = `https://stooq.com/q/l/?s=${encodeURIComponent(symbol.toLowerCase())}.us&f=sd2t2ohlcv&h&e=csv`;
-      const r = await fetch(url);
-      if (!r.ok) throw new Error('stooq status ' + r.status);
-      return { type: 'text', body: await r.text() };
-    } else {
-      const now = new Date();
-      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-      const url = `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${dateStr}&stockNo=${encodeURIComponent(symbol)}`;
-      const r = await fetch(url);
-      if (!r.ok) throw new Error('twse status ' + r.status);
-      return { type: 'json', body: await r.json() };
+      const json = await r.json();
+      const rate = json && json.rates && json.rates.TWD;
+      if (!rate) throw new Error('fx no TWD rate');
+      return { price: rate };
     }
+
+    // 台股在Yahoo Finance用「代號.TW」查詢，美股直接用代號
+    const yahooSymbol = market === 'US' ? symbol : `${symbol}.TW`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; asset-manager/1.0)' } });
+    if (!r.ok) throw new Error('yahoo status ' + r.status);
+    const json = await r.json();
+    const result = json && json.chart && json.chart.result && json.chart.result[0];
+    const price = result && result.meta && (result.meta.regularMarketPrice || result.meta.previousClose);
+    if (!price) throw new Error('no price in yahoo response');
+    return { price };
   }
 
-  // 伺服器端重試最多3次，中間間隔遞增，比在瀏覽器裡重試穩定很多
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      if (attempt > 0) await sleep(300 * attempt);
+      if (attempt > 0) await sleep(600 * attempt);
       const result = await doFetch();
-      if (result.type === 'json') res.status(200).json(result.body);
-      else res.status(200).send(result.body);
+      res.status(200).json(result);
       return;
     } catch (e) { lastErr = e; }
   }
