@@ -4,13 +4,34 @@
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  const { symbol, market } = req.query;
+  const { symbol, market, range } = req.query;
   if (!symbol) {
     res.status(400).json({ error: 'missing symbol' });
     return;
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  async function fetchYahoo(fullSymbol) {
+    const rangeParam = range === 'full' ? '&range=1y&interval=1d' : '';
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(fullSymbol)}?${rangeParam.replace(/^&/, '')}`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; asset-manager/1.0)' } });
+    if (!r.ok) throw new Error('yahoo status ' + r.status);
+    const json = await r.json();
+    const result = json && json.chart && json.chart.result && json.chart.result[0];
+    if (!result) throw new Error('no result in yahoo response');
+    if (range === 'full') {
+      const timestamps = result.timestamp || [];
+      const closes = (result.indicators && result.indicators.quote
+                    && result.indicators.quote[0] && result.indicators.quote[0].close) || [];
+      const series = timestamps.map((t, i) => ({ date: new Date(t * 1000).toISOString().slice(0, 10), close: closes[i] })).filter(p => p.close != null);
+      if (series.length === 0) throw new Error('empty history series');
+      return { series };
+    }
+    const price = result.meta && (result.meta.regularMarketPrice || result.meta.previousClose);
+    if (!price) throw new Error('no price in yahoo response');
+    return { price };
+  }
 
   async function doFetch() {
     if (market === 'FX') {
@@ -27,29 +48,13 @@ module.exports = async function handler(req, res) {
       const suffixes = ['.TW', '.TWO'];
       let lastYahooErr;
       for (const suffix of suffixes) {
-        try {
-          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suffix)}`;
-          const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; asset-manager/1.0)' } });
-          if (!r.ok) throw new Error('yahoo status ' + r.status);
-          const json = await r.json();
-          const result = json && json.chart && json.chart.result && json.chart.result[0];
-          const price = result && result.meta && (result.meta.regularMarketPrice || result.meta.previousClose);
-          if (!price) throw new Error('no price in yahoo response');
-          return { price };
-        } catch (e) { lastYahooErr = e; }
+        try { return await fetchYahoo(symbol + suffix); } catch (e) { lastYahooErr = e; }
       }
       throw lastYahooErr;
     }
 
     // 美股直接用代號查詢
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
-    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; asset-manager/1.0)' } });
-    if (!r.ok) throw new Error('yahoo status ' + r.status);
-    const json = await r.json();
-    const result = json && json.chart && json.chart.result && json.chart.result[0];
-    const price = result && result.meta && (result.meta.regularMarketPrice || result.meta.previousClose);
-    if (!price) throw new Error('no price in yahoo response');
-    return { price };
+    return await fetchYahoo(symbol);
   }
 
   let lastErr;
